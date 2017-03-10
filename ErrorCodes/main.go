@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	
 	"flag"
 	"fmt"
 	"io"
@@ -29,7 +27,6 @@ func makeSplitterRunner() (pipeline.SplitterRunner, error) {
 
 func main() {
 	flagMatch := flag.String("match", "TRUE", "message_matcher filter expression")
-	flagFormat := flag.String("format", "txt", "output format [txt|json|heka|count]")
 	flagOutput := flag.String("output", "", "output filename, defaults to stdout")
 	flagTail := flag.Bool("tail", false, "don't exit on EOF")
 	flagOffset := flag.Int64("offset", 0, "starting offset for the input file in bytes")
@@ -53,6 +50,17 @@ func main() {
 		os.Exit(2)
 	}
 
+	var out *os.File
+	if "" == *flagOutput {
+		out = os.Stdout
+	} else {
+		if out, err = os.OpenFile(*flagOutput, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", err)
+			os.Exit(4)
+		}
+		defer out.Close()
+	}
+
 	var file *os.File
 	for _, filename := range flag.Args() {
 		if file, err = os.Open(filename); err != nil {
@@ -60,17 +68,6 @@ func main() {
 			os.Exit(3)
 		}
 		defer file.Close()
-
-		var out *os.File
-		if "" == *flagOutput {
-			out = os.Stdout
-		} else {
-			if out, err = os.OpenFile(*flagOutput, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "%s\n", err)
-				os.Exit(4)
-			}
-			defer out.Close()
-		}
 
 		var offset int64
 		if offset, err = file.Seek(*flagOffset, 0); err != nil {
@@ -87,7 +84,7 @@ func main() {
 		var processed, matched int64
 
 		fmt.Fprintf(os.Stderr, "Input:%s  Offset:%d  Match:%s  Format:%s  Tail:%t  Output:%s\n",
-		flag.Arg(0), *flagOffset, *flagMatch, *flagFormat, *flagTail, *flagOutput)
+		flag.Arg(0), *flagOffset, *flagMatch, *flagTail, *flagOutput)
 		for true {
 			n, record, err := sRunner.GetRecordFromStream(file)
 			if n > 0 && n != len(record) {
@@ -95,7 +92,7 @@ func main() {
 			}
 			if err != nil {
 				if err == io.EOF {
-					if !*flagTail || "count" == *flagFormat {
+					if !*flagTail {
 						break
 					}
 					time.Sleep(time.Duration(500) * time.Millisecond)
@@ -116,20 +113,10 @@ func main() {
 					}
 					matched += 1
 
-					switch *flagFormat {
-					case "count":
-						// no op
-					case "json":
-						contents, _ := json.Marshal(msg)
-						fmt.Fprintf(out, "%s\n", contents)
-					case "heka":
-						fmt.Fprintf(out, "%s", record)
-					default:
-						for _, item := range msg.Fields {
-							value := fmt.Sprintf("%+v", item.GetValue())
-							if *item.Name == "errorCode" {
-								errorCodes[value] = errorCodes[value] + 1
-							}
+					for _, item := range msg.Fields {
+						value := fmt.Sprintf("%+v", item.GetValue())
+						if *item.Name == "errorCode" {
+							errorCodes[value] = errorCodes[value] + 1
 						}
 					}
 				}
@@ -139,7 +126,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Processed: %d, matched: %d messages\n", processed, matched)
 	}
 	for code, count := range errorCodes {
-		fmt.Fprintf(os.Stderr, "%s, %d\n", code, count)
+		fmt.Fprintf(out, "%s, %d\n", code, count)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
