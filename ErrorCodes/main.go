@@ -1,11 +1,13 @@
 package main
 
 import (
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"strings"
 	"time"
 	
 	"github.com/gogo/protobuf/proto"
@@ -29,7 +31,6 @@ func main() {
 	flagMatch := flag.String("match", "TRUE", "message_matcher filter expression")
 	flagOutput := flag.String("output", "", "output filename, defaults to stdout")
 	flagTail := flag.Bool("tail", false, "don't exit on EOF")
-	flagOffset := flag.Int64("offset", 0, "starting offset for the input file in bytes")
 	flagMaxMessageSize := flag.Uint64("max-message-size", 4*1024*1024, "maximum message size in bytes")
 	flag.Parse()
 
@@ -63,17 +64,23 @@ func main() {
 
 	var file *os.File
 	for _, filename := range flag.Args() {
+		// open the file
 		if file, err = os.Open(filename); err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", err)
 			os.Exit(3)
 		}
 		defer file.Close()
 
-		var offset int64
-		if offset, err = file.Seek(*flagOffset, 0); err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", err)
-			os.Exit(5)
+		// if the filename ends in .gz, get a gzip reader
+		var reader io.Reader
+		if strings.HasSuffix(filename, ".gz") {
+			reader, err = gzip.NewReader(file)
+		} else {
+			reader = file
 		}
+
+		var offset int64
+		offset = 0
 
 		sRunner, err := makeSplitterRunner()
 		if err != nil {
@@ -83,10 +90,10 @@ func main() {
 		msg := new(message.Message)
 		var processed, matched int64
 
-		fmt.Fprintf(os.Stderr, "Input:%s  Offset:%d  Match:%s  Format:%s  Tail:%t  Output:%s\n",
-		flag.Arg(0), *flagOffset, *flagMatch, *flagTail, *flagOutput)
+		fmt.Fprintf(os.Stderr, "Input:%s  Match:%s  Format:%s  Tail:%t  Output:%s\n",
+		flag.Arg(0), *flagMatch, *flagTail, *flagOutput)
 		for true {
-			n, record, err := sRunner.GetRecordFromStream(file)
+			n, record, err := sRunner.GetRecordFromStream(reader)
 			if n > 0 && n != len(record) {
 				fmt.Fprintf(os.Stderr, "Corruption detected at offset: %d bytes: %d\n", offset, n-len(record))
 			}
